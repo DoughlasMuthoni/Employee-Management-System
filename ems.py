@@ -6,18 +6,21 @@ import tkinter as tk
 from database import get_monthly_attendance, mycursor, conn, connect_database
 from tkinter import messagebox, Toplevel, StringVar, filedialog
 import database
+from datetime import datetime
 from datetime import date
 from tkinter import END, Text  
-from tkcalendar import Calendar
+from employee_dashboard import get_db_connection
+from tkcalendar import Calendar, DateEntry
 from datetime import datetime
 import pymysql 
 from fpdf import FPDF 
+
+
 def delete_all():
-    messagebox.askyesno('Confirm', 'Do you Really Want to Delete All the Records?')
+    result = messagebox.askyesno('Confirm', 'Do you really want to delete all the records?')  # Store the return value
     if result:
         database.deleteall_records()
-    else:
-        pass
+
 
 
 def show_all():
@@ -248,8 +251,132 @@ def download_payrolls_as_pdf(payrolls, parent_window):
     else:
         messagebox.showerror("Error", "Failed to save the PDF.", parent=parent_window)  # ✅ Keep on top
 
-def view_attendance_calendar():
-    """Opens a modern window to display attendance in a calendar format."""
+
+def refresh_attendance_calendar(employee_id, calendar_widget):
+    """Fetch fresh attendance records and update the calendar UI."""
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        # ✅ Always fetch the latest attendance records
+        cursor.execute("SELECT date, status FROM attendance WHERE employee_id = %s", (employee_id,))
+        attendance_data = cursor.fetchall()
+
+        # 🗑 Remove old events before adding new ones
+        calendar_widget.calevent_remove('all')
+
+        # 🎨 Add fresh attendance records to the calendar
+        for date_obj, status in attendance_data:
+            if isinstance(date_obj, datetime):
+                date_obj = date_obj.date()  # Convert datetime to date
+            elif isinstance(date_obj, str):  # Convert string to date
+                try:
+                    date_obj = datetime.strptime(date_obj, "%Y-%m-%d").date()
+                except ValueError:
+                    print(f"❌ Invalid date format: {date_obj}")  # Debugging
+                    continue  # Skip invalid entries
+
+            print(f"✅ Adding event: {date_obj} - {status}")  # Debugging
+
+            if status == "Present":
+                calendar_widget.calevent_create(date_obj, "Present", tags=("present_tag",))
+            elif status == "Absent":
+                calendar_widget.calevent_create(date_obj, "Absent", tags=("absent_tag",))
+
+        # ✅ Apply colors to tags
+        calendar_widget.tag_config("present_tag", background="green", foreground="white")
+        calendar_widget.tag_config("absent_tag", background="red", foreground="white")
+
+        print("🚀 Attendance calendar updated!")
+
+    except pymysql.MySQLError as e:
+        messagebox.showerror("Database Error", f"Failed to fetch attendance: {e}")
+
+    finally:
+        cursor.close()
+        conn.close()  # ✅ Ensure DB connection is closed
+
+
+def modify_attendance(employee_id, calendar_widget, refresh_calendar_callback):
+    """Allows the admin to modify attendance for any day in the month."""
+
+    if not employee_id:
+        messagebox.showerror("Error", "No employee selected!")
+        return
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # ✅ Create Modify Attendance Window
+    modify_window = Toplevel()
+    modify_window.title("Modify Attendance")
+    modify_window.geometry("400x250")
+    modify_window.configure(bg="#1E2749")  # Dark theme
+
+    # 🏷 Title
+    CTkLabel(modify_window, text=f"Modify Attendance for Employee ID: {employee_id}", 
+             font=("Arial", 14, "bold"), text_color="white").pack(pady=10)
+
+    # 📆 Date Picker
+    CTkLabel(modify_window, text="Select Date:", text_color="white").pack()
+    date_entry = DateEntry(modify_window, width=20, background="darkblue", 
+                           foreground="white", borderwidth=2)
+    date_entry.pack(pady=5)
+
+    # 🎯 Attendance Status Dropdown
+    CTkLabel(modify_window, text="Attendance Status:", text_color="white").pack()
+    status_var = StringVar(value="Absent")  # Default: Absent
+    status_dropdown = CTkComboBox(modify_window, values=["Present", "Absent"], 
+                                  variable=status_var, state="readonly", width=150)
+    status_dropdown.pack(pady=5)
+
+    # ✅ Submit Changes Function
+    def submit_changes():
+        attendance_date = date_entry.get()
+        attendance_status = status_var.get()
+
+        try:
+            formatted_date = datetime.strptime(attendance_date, "%m/%d/%y").strftime("%Y-%m-%d")
+
+            cursor.execute("SELECT status FROM attendance WHERE employee_id = %s AND date = %s", 
+                           (employee_id, formatted_date))
+            existing_record = cursor.fetchone()
+
+            if existing_record:
+                cursor.execute("UPDATE attendance SET status=%s WHERE employee_id=%s AND date=%s", 
+                               (attendance_status, employee_id, formatted_date))
+            else:
+                cursor.execute("INSERT INTO attendance (employee_id, date, status) VALUES (%s, %s, %s)", 
+                               (employee_id, formatted_date, attendance_status))
+
+            conn.commit()
+            messagebox.showinfo("Success", f"Attendance updated for {employee_id} on {formatted_date}")
+
+            modify_window.destroy()  # 🚪 Close window
+            refresh_calendar_callback()  # 🚀 Refresh the calendar
+
+        except pymysql.MySQLError as e:
+            messagebox.showerror("Database Error", f"Failed to update attendance: {e}")
+
+        finally:
+            cursor.close()
+            conn.close()  # ✅ Ensure DB connection is closed
+
+    # 🚀 Submit Button
+    CTkButton(modify_window, text="Update Attendance", command=submit_changes).pack(pady=10)
+
+    # 🚪 Cancel Button
+    CTkButton(modify_window, text="Cancel", command=modify_window.destroy).pack()
+
+    modify_window.transient()
+    modify_window.grab_set()
+    modify_window.focus_force()
+
+    modify_window.mainloop()
+
+def view_attendance_calendar(employee_id):
+    """Opens a modern window to display attendance in a calendar format with real-time updates."""
 
     employee_id = get_selected_employee_id()
 
@@ -257,25 +384,21 @@ def view_attendance_calendar():
         messagebox.showerror("Error", "Please select an employee!")
         return
 
+    # ✅ Check if Employee Exists
     mycursor.execute("SELECT COUNT(*) FROM data WHERE id = %s", (employee_id,))
     if mycursor.fetchone()[0] == 0:
         messagebox.showerror("Error", "Employee ID does not exist!")
         return
 
-   # 🌟 Calendar Window (White Background)
+    # 🌟 Calendar Window
     calendar_window = ctk.CTkToplevel(window)
     calendar_window.title(f"Attendance Calendar - Employee ID: {employee_id}")
-    calendar_window.geometry("500x450")  # Bigger window
+    calendar_window.geometry("500x500")
     calendar_window.resizable(False, False)
-    calendar_window.configure(fg_color="white")  # White background
+    calendar_window.configure(fg_color="white")
 
-    # ✅ Ensure window appears on top initially
-    calendar_window.attributes('-topmost', True)
-    calendar_window.after(200, lambda: calendar_window.attributes('-topmost', False))  # Reset after 200ms
-
-    # ✅ Force focus to prevent opening in the background
+    # ✅ Focus Window
     calendar_window.focus_force()
-
 
     # 🏷 Title Label
     title_label = ctk.CTkLabel(
@@ -288,37 +411,59 @@ def view_attendance_calendar():
     cal = Calendar(
         calendar_window, selectmode="day",
         year=datetime.now().year, month=datetime.now().month,
-        font=("Arial", 12),  # Larger text
+        font=("Arial", 12),
         borderwidth=2, relief="solid",
         background="white", foreground="black", headersbackground="#f0f0f0",
         normalbackground="white", weekendbackground="#f9f9f9",
         selectbackground="#007BFF", selectforeground="white",
     )
-    cal.pack(pady=9, padx=18, expand=True, fill="both")  # Fully expand
+    cal.pack(pady=9, padx=18, expand=True, fill="both")
 
-    # 🗓 Fetch Attendance Records
-    attendance_data = get_monthly_attendance(employee_id)
+    # ✅ Function to Fetch and Highlight Attendance
+    def update_calendar():
+        cal.calevent_remove("all")  # Clear previous events
 
-    # 🎨 Highlight Attendance
-    for date_obj, status in attendance_data:
-        if isinstance(date_obj, datetime):
-            date_obj = date_obj.date()  # Ensure it's a date object
-        
-        if status == "Present":
-            cal.calevent_create(date_obj, "Present", "present_tag")
-        else:
-            cal.calevent_create(date_obj, "Absent", "absent_tag")
+        attendance_data = get_monthly_attendance(employee_id)
 
-    cal.tag_config("present_tag", background="green", foreground="white")
-    cal.tag_config("absent_tag", background="red", foreground="white")
+        for date_obj, status in attendance_data:
+            if isinstance(date_obj, datetime):
+                date_obj = date_obj.date()  # Ensure it's a date object
+
+            if status == "Present":
+                cal.calevent_create(date_obj, "Present", tags=("present_tag",))
+            else:
+                cal.calevent_create(date_obj, "Absent", tags=("absent_tag",))
+
+        # ✅ Apply different colors to Present and Absent dates
+        cal.tag_config("present_tag", background="green", foreground="white")
+        cal.tag_config("absent_tag", background="red", foreground="white")
+
+    # 🔄 Load Data Initially
+    update_calendar()
+
+    modify_attendance_button = ctk.CTkButton(
+    calendar_window, text="Modify Attendance",
+    font=("Arial", 14, "bold"), fg_color="#007BFF",
+    hover_color="#0056b3", text_color="white", corner_radius=10,
+    command=lambda: modify_attendance(employee_id, cal, lambda: refresh_attendance_calendar(employee_id, cal))  # ✅ Pass refresh function
+    )
+    modify_attendance_button.pack(pady=5)
+
+    # 🔄 Refresh Button to Update Attendance
+    refresh_button = ctk.CTkButton(
+        calendar_window, text="Refresh", command=update_calendar,
+        font=("Arial", 14, "bold"), fg_color="#28a745",
+        hover_color="#218838", text_color="white", corner_radius=10
+    )
+    refresh_button.pack(pady=5)
 
     # 🚪 Close Button (Rounded)
     close_button = ctk.CTkButton(
         calendar_window, text="Close", command=calendar_window.destroy,
-        font=("Arial", 14, "bold"), fg_color="#FF3B3F", hover_color="#D32F2F",
-        text_color="white", corner_radius=10
+        font=("Arial", 14, "bold"), fg_color="#FF3B3F",
+        hover_color="#D32F2F", text_color="white", corner_radius=10
     )
-    close_button.pack(pady=15)
+    close_button.pack(pady=10)
 
 def generate_payroll():
     employee_id = entries['Id'].get().strip()  # Get Employee ID
@@ -657,14 +802,13 @@ def get_selected_employee_id():
 
 
 
-
 # Set theme & scaling
 ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
 ctk.set_widget_scaling(1.2)
 
 # Initialize Window
-window = CTk()
+window = ctk.CTk()
 window.geometry('1200x670+100+100')
 window.title('Employee Management System')
 window.configure(fg_color='#161C30')
@@ -672,26 +816,18 @@ window.configure(fg_color='#161C30')
 # Configure Grid Layout
 window.columnconfigure(0, weight=1)  # Left Frame expands
 window.columnconfigure(1, weight=2)  # Right Frame gets more space
-window.rowconfigure(1, weight=1)  # Allow row 1 to expand
+window.rowconfigure(1, weight=1)  # Main Content expands
+window.rowconfigure(2, weight=0)  # Footer fixed at bottom
 
-# Function to Resize Image Width Responsively
-def resize_bg(event=None):
-    global bg_photo
-    bg_image = Image.open('employees.jpg')
-    bg_image = bg_image.resize((window.winfo_width(), 80), Image.LANCZOS)  
-    bg_photo = ImageTk.PhotoImage(bg_image)
+# 🌟 HEADER (Top Bar)
+header_frame = ctk.CTkFrame(window, height=80, fg_color="#1E2749")  # Dark Blue
+header_frame.grid(row=0, column=0, columnspan=2, sticky="nsew")
 
-    logoLabel.configure(image=bg_photo)
-    logoLabel.image = bg_photo  # Keep reference to prevent garbage collection
+header_label = ctk.CTkLabel(header_frame, text="Employee Management System", 
+font=("Arial", 20, "bold"), text_color="cyan")
+header_label.pack(pady=6)
 
-# Load Initial Image
-bg_image = Image.open('login-images.jpeg')
-bg_image = bg_image.resize((930, 158), Image.LANCZOS)
-bg_photo = ImageTk.PhotoImage(bg_image)
 
-# Display Image at the Top
-logoLabel = CTkLabel(window, image=bg_photo, text="")
-logoLabel.grid(row=0, column=0, columnspan=2, sticky="nsew")
 # 🌟 Left Frame (Employee Input Fields) - Increased Width
 leftFrame = CTkFrame(window, fg_color='#1E2749', corner_radius=15, width=450)  # Increased width
 leftFrame.grid(row=1, column=0, sticky="nsew", padx=20, pady=20)
@@ -783,82 +919,79 @@ rightFrame.rowconfigure(1, weight=1)
 
 
 
-# 🌟 Button Frame
+# 🌟 Configure Grid Layout
+window.columnconfigure(0, weight=1)  # Left Frame expands
+window.columnconfigure(1, weight=2)  # Right Frame gets more space
+window.rowconfigure(1, weight=1)  # Main content (left & right frame) expands
+window.rowconfigure(2, weight=0)  # Buttons
+window.rowconfigure(3, weight=0)  # Extra Buttons
+window.rowconfigure(4, weight=0)  # Footer
+
+# 🌟 Button Frame (Row 2)
 buttonFrame = CTkFrame(window, fg_color='#161C30')
 buttonFrame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=5, padx=10)
 
-# Configure columns for responsiveness
-for i in range(4):  
-    buttonFrame.columnconfigure(i, weight=1)  
+# 🌟 Configure columns for 3 groups of buttons
+for i in range(6):  
+    buttonFrame.columnconfigure(i, weight=1)
 
 # 🌟 Row 1: Employee Management
-newButton = CTkButton(buttonFrame, text='New Employee', font=('arial', 15, 'bold'), corner_radius=15, command=lambda:clear(True))
-newButton.grid(row=0, column=0, padx=10, pady=5, sticky="ew")
+newButton = CTkButton(buttonFrame, text='New Employee', font=('Arial', 15, 'bold'), corner_radius=20,
+                      fg_color="#0078D7", text_color="white", hover_color="#005A9E", command=lambda: clear(True))
+newButton.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
 
-addButton = CTkButton(buttonFrame, text='Add Employee', font=('arial', 15, 'bold'), corner_radius=15, command=add_employee)
-addButton.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
+addButton = CTkButton(buttonFrame, text='Add Employee', font=('Arial', 15, 'bold'), corner_radius=20,
+                      fg_color="#28A745", text_color="white", hover_color="#1E7E34", command=add_employee)
+addButton.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
 
-updateButton = CTkButton(buttonFrame, text='Update Employee', font=('arial', 15, 'bold'), corner_radius=15, command=update_employee)
-updateButton.grid(row=0, column=2, padx=10, pady=5, sticky="ew")
+updateButton = CTkButton(buttonFrame, text='Update Employee', font=('Arial', 15, 'bold'), corner_radius=20,
+                         fg_color="#FF9800", text_color="white", hover_color="#E68900", command=update_employee)
+updateButton.grid(row=0, column=2, padx=5, pady=5, sticky="ew")
 
-deleteButton = CTkButton(buttonFrame, text='Delete Employee', font=('arial', 15, 'bold'), corner_radius=15, command=delete_employee)
-deleteButton.grid(row=0, column=3, padx=10, pady=5, sticky="ew")
+payrollButton = CTkButton(buttonFrame, text='Generate Payroll', font=('Arial', 15, 'bold'), corner_radius=20,
+                          fg_color="#6F42C1", text_color="white", hover_color="#5A32A3", command=generate_payroll)
+payrollButton.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
 
-# View Payrolls Button (Placed Next to Delete Button)
-viewPayrollButton = CTkButton(buttonFrame, text='View All Payrolls', font=('arial', 15, 'bold'),
-corner_radius=15, command=view_all_payrolls)
-viewPayrollButton.grid(row=0, column=4, padx=10, pady=5, sticky="ew")  # Placed in column 4
+viewPayrollButton = CTkButton(buttonFrame, text='View Payrolls', font=('Arial', 15, 'bold'), corner_radius=20,
+                              fg_color="#6F42C1", text_color="white", hover_color="#5A32A3", command=view_all_payrolls)
+viewPayrollButton.grid(row=0, column=4, padx=5, pady=5, sticky="ew")
 
-# 🌟 Row 2: Actions
+reportButton = CTkButton(buttonFrame, text='View Report', font=('Arial', 15, 'bold'), corner_radius=20,
+fg_color="#17A2B8", text_color="white", hover_color="#138496", command=lambda: view_report(get_selected_employee_id()))
+reportButton.grid(row=0, column=5, padx=5, pady=5, sticky="ew")
+
+# 🌟 Row 2: Extra Actions (Row 3)
 extraButtonFrame = CTkFrame(window, fg_color='#161C30')
 extraButtonFrame.grid(row=3, column=0, columnspan=2, sticky="ew", pady=5, padx=10)
 
-for i in range(4):
+for i in range(3):
     extraButtonFrame.columnconfigure(i, weight=1)
 
-deleteallButton = CTkButton(extraButtonFrame, text='Delete All', font=('arial', 15, 'bold'), corner_radius=15, command=delete_all)
-deleteallButton.grid(row=0, column=0, padx=10, pady=5, sticky="ew")
+attendance_calendar_button = CTkButton(extraButtonFrame, text='View Attendance', font=('Arial', 15, 'bold'),
+ corner_radius=20, fg_color="#FFC107", text_colorhover_color="#D39E00",
+ command=lambda: view_attendance_calendar(get_selected_employee_id()))
+attendance_calendar_button.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
 
-attendanceButton = CTkButton(
-    extraButtonFrame, 
-    text='Modify Attendance', 
-    font=('arial', 15, 'bold'), 
-    corner_radius=15, 
-    command=lambda: modify_attendance(get_selected_employee_id())  # ✅ Pass Employee ID
-)
-attendanceButton.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
+deleteButton = CTkButton(extraButtonFrame, text='Delete Employee', font=('Arial', 15, 'bold'), corner_radius=20,
+                         fg_color="#DC3545", text_color="white", hover_color="#B02A37", command=delete_employee)
+deleteButton.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
 
+deleteallButton = CTkButton(extraButtonFrame, text='Delete All', font=('Arial', 15, 'bold'), corner_radius=20,
+                            fg_color="#DC3545", text_color="white", hover_color="#B02A37", command=delete_all)
+deleteallButton.grid(row=0, column=2, padx=5, pady=5, sticky="ew")
 
-payrollButton = CTkButton(extraButtonFrame, text='Generate Payroll', font=('arial', 15, 'bold'), corner_radius=15, command=generate_payroll)
-payrollButton.grid(row=0, column=2, padx=10, pady=5, sticky="ew")
+# 🌟 Footer (Row 4)
+footerFrame = CTkFrame(window, fg_color='#101827', height=40)  # Set fixed height
+footerFrame.grid(row=4, column=0, columnspan=2, sticky="ew", padx=10, pady=(5, 0))
 
-reportButton = CTkButton(
-    extraButtonFrame, 
-    text='View Report', 
-    font=('Arial', 15, 'bold'), 
-    corner_radius=15, 
-    command=lambda: view_report(get_selected_employee_id())  # ✅ Pass Employee ID
-)
-reportButton.grid(row=0, column=3, padx=10, pady=5, sticky="ew")
-
-attendance_calendar_button = CTkButton(
-    extraButtonFrame, 
-    text='View Attendance Calendar', 
-    font=('Arial', 15, 'bold'), 
-    corner_radius=15, 
-    command=view_attendance_calendar
-)
-attendance_calendar_button.grid(row=0, column=4, padx=10, pady=5, sticky="ew")
+footerLabel = CTkLabel(footerFrame, text="© 2025 Employee Management System | All Rights Reserved",
+                       font=("Arial", 12, "bold"), text_color="white")
+footerLabel.pack(pady=5)
 
 
-
-
-
-# Bind Resize Event for Image Responsiveness
-window.bind("<Configure>", resize_bg)
-# displays the data when the code is run
 treeview_data()
 
 window.bind('<ButtonRelease>', selection)
+
 # Run Application
 window.mainloop()

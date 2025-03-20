@@ -232,19 +232,41 @@ class EmployeeDashboard(CTk):
         attendance_data = cursor.fetchall()
         conn.close()
 
+      
+
+
         # 🎨 Highlight Attendance in the Calendar
         for date_obj, status in attendance_data:  
-            if isinstance(date_obj, datetime):  
-                date_obj = date_obj.date()  # Ensure it's a date object
+            # 🚨 Skip invalid placeholder dates
+            if date_obj == "0000-00-00" or date_obj is None:
+                print(f"⚠️ Skipping invalid date: {date_obj}")
+                continue  
 
-            if status == "Present":
-                cal.calevent_create(date_obj, "Present", "present_tag")
-            elif status == "Absent":
-                cal.calevent_create(date_obj, "Absent", "absent_tag")
+            # Ensure date_obj is of type `datetime.date`
+            if isinstance(date_obj, datetime):  
+                date_obj = date_obj.date()  
+            elif isinstance(date_obj, str):  # Convert string to date
+                try:
+                    date_obj = datetime.strptime(date_obj, "%Y-%m-%d").date()
+                except ValueError as e:
+                    print(f"❌ Date conversion error: {e}, Raw value: {date_obj}")
+                    continue  # Skip invalid dates
+
+            # ✅ Debugging: Print to check type before using it
+            print(f"✅ Adding event: {date_obj} ({type(date_obj)}) - {status}")  
+
+            if isinstance(date_obj, date):  # Final check before using it
+                if status == "Present":
+                    cal.calevent_create(date_obj, "Present", "present_tag")
+                elif status == "Absent":
+                    cal.calevent_create(date_obj, "Absent", "absent_tag")
+            else:
+                print(f"❌ ERROR: {date_obj} is not a datetime.date instance, skipping...")
 
         # Apply colors to tags
         cal.tag_config("present_tag", background="green", foreground="white")  # ✅ Green for Present
         cal.tag_config("absent_tag", background="red", foreground="white")      # ❌ Red for Absent
+
 
 
 
